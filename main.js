@@ -2525,12 +2525,16 @@ class BlockSearchSuggest extends obsidian.EditorSuggest {
   onTrigger(cursor, editor) {
     if (!this.plugin.settings.atSearch) return null;
     const before = editor.getLine(cursor.line).slice(0, cursor.ch);
-    // @ 前面是行首、空白、标点或汉字都触发（中文行文里 @ 前通常没有空格）；
-    // 前面紧挨字母、数字或邮箱常见符号时不触发，防邮箱误触
-    const m = before.match(/(?:^|[^A-Za-z0-9._%+@-])@([^\s@]{0,40})$/);
+    // @ 紧接在文字后面也触发（中文行文里 @ 前通常没有空格）。
+    // 防打邮箱：@ 前是字母/数字/邮箱符号、且 @ 后已出现 . 时（域名），不再触发
+    const m = before.match(/@([^\s@]{0,40})$/);
     if (!m) return null;
+    const at = before.length - m[1].length - 1;
+    const prev = at > 0 ? before[at - 1] : '';
+    if (prev === '@') return null;
+    if (/[A-Za-z0-9._%+-]/.test(prev) && m[1].includes('.')) return null;
     return {
-      start: { line: cursor.line, ch: cursor.ch - m[1].length - 1 },
+      start: { line: cursor.line, ch: at },
       end: cursor,
       query: m[1],
     };

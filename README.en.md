@@ -107,7 +107,7 @@ Interaction:
 
 ### Block search and block links
 
-Type `@` at the start of a line, or after a space, punctuation or a Chinese character, then a keyword, to search every block in the vault. The trigger is skipped when `@` follows a letter or digit, so email addresses are left alone. The keyword can be up to 40 characters and cannot contain spaces. The candidate list shows the block text, file path and line number. Press `Enter` to insert a block link.
+Type `@` anywhere, then a keyword, to search every block in the vault. `@` can directly follow text. To leave email addresses alone, the popup stops appearing when `@` follows a letter, digit or email symbol and a period has been typed after the `@`. The keyword can be up to 40 characters and cannot contain spaces. The candidate list shows the block text, file path and line number. Press `Enter` to insert a block link.
 
 If the target block has no id, the plugin generates one and writes it into the target note.
 
@@ -177,7 +177,7 @@ The target note or block does not exist, or the block id was changed.
 
 **Nothing pops up when I type `@`. What should I check?**
 
-Check three things: the setting "Vault-wide block search with @" is on; you are in editing mode, since reading view does not respond; and `@` does not directly follow a letter or digit.
+Check three things: the setting "Vault-wide block search with @" is on; you are in editing mode, since reading view does not respond; and no period has been typed after the `@`, and it is not a double `@@`.
 
 **The indentation guides do not appear. What should I do?**
 
@@ -218,6 +218,8 @@ Settings are stored in `data.json` in the plugin folder. Cursor and scroll posit
 - The plugin patches the way the editor opens files and calls an internal Obsidian interface for global search. These features may break after a major Obsidian update.
 
 ### Changelog
+
+**1.0.1**: `@` block search now works directly after text, with a guard for email addresses.
 
 **1.0.0**: first public release.
 
