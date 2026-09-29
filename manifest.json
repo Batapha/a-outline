@@ -1,0 +1,10 @@
+{
+  "id": "a-outline",
+  "name": "A outline",
+  "version": "1.0.0",
+  "minAppVersion": "1.8.7",
+  "description": "Inline block references, a clean outline look with indentation guides, and Roam-style cursor and Enter behavior for lists.",
+  "author": "Batapha",
+  "isDesktopOnly": false,
+  "authorUrl": "https://github.com/Batapha"
+}
