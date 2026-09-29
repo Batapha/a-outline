@@ -4,11 +4,9 @@ const obsidian = require('obsidian');
 const {
   Plugin, PluginSettingTab, Setting, Keymap, MarkdownView,
   MarkdownRenderer, MarkdownRenderChild, Notice, TFile, Platform,
-  ItemView, WorkspaceLeaf, TFolder,
+  WorkspaceLeaf, TFolder,
   parseLinktext, editorLivePreviewField, editorInfoField,
 } = obsidian;
-
-const DAILY_STREAM_VIEW = 'oo-daily-stream';
 
 // CM6 模块由 Obsidian 插件加载器的模块映射表提供，可直接 require。
 // 拿不到时优雅降级：阅读视图照常行内化，Live Preview 退回原生嵌入＋去卡片样式。
@@ -36,42 +34,21 @@ const DEFAULT_SETTINGS = {
   inlineRefs: true,
   taskRefs: false, // 实验特性，默认关
   clickToJump: true,
-  outlineStyle: true,
-  compact: false,
-  boldAccent: false,
   warmupSweep: false, // 实验特性：打开文件时滚动预测量，默认关
-  spacious: false,
   atSearch: true,
   hideBlockIds: true,
   roamCursor: true, // Roam 式光标：行首/行尾上下移动、内容最前面 Enter 进新行
-  guideChain: true, // 缩进参考线只显示光标所在块的上级链
   refCounts: false, // 引用计数需要扫描全库元数据，默认关
-  roundTodo: false,
   blockLinkMenu: true,
-  liquidGlass: false,
-  headingLabels: false,
   rememberPosition: true, // 记住光标与滚动位置
-  navGuides: false, // 文件树参考线
-  navGuidesElbow: false, // 文件树参考线：肘线
-  navGuidesMuteFiles: false, // 文件树参考线：文件行淡化
-  navGuidesIndent: 32, // 文件树参考线：每层缩进像素，主题默认约 16
 };
+
 
 const BODY_CLASSES = {
   inlineRefs: 'oo-inline-refs',
-  outlineStyle: 'oo-outline-style',
-  compact: 'oo-compact',
-  boldAccent: 'oo-bold-accent',
-  spacious: 'oo-spacious',
   refCounts: 'oo-refcounts',
-  roundTodo: 'oo-round-todo',
-  liquidGlass: 'oo-glass',
-  headingLabels: 'oo-heading-labels',
-  navGuides: 'oo-nav-guides',
-  guideChain: 'oo-guide-chain',
-  navGuidesElbow: 'oo-nav-elbow',
-  navGuidesMuteFiles: 'oo-nav-mute-files',
 };
+
 
 // 引用嵌套上限：A 引 B、B 引 C 到此为止；防 A↔B 循环引用把渲染拖死
 const MAX_NEST_DEPTH = 2;
@@ -240,10 +217,6 @@ module.exports = class OutlinePlugin extends Plugin {
     this.registerEditorSuggest(new BlockSearchSuggest(this));
 
     this.applyBodyClasses();
-    // 文件树几何实测：量行文字中心供肘线定位，随主题/布局变化重测
-    this.registerEvent(this.app.workspace.on('css-change', () => this.scheduleNavMeasure()));
-    this.registerEvent(this.app.workspace.on('layout-change', () => this.scheduleNavMeasure()));
-    this.app.workspace.onLayoutReady(() => this.scheduleNavMeasure());
     this.addSettingTab(new OutlineSettingTab(this.app, this));
 
     // 阅读视图（以及一切走 MarkdownRenderer 的内容，含悬停预览、整页嵌入内部）：
@@ -302,16 +275,10 @@ module.exports = class OutlinePlugin extends Plugin {
     // 否则原生嵌入照旧渲染，本插件的行内引用永远不出场
     if (cm) {
       this.registerEditorExtension(cm.state.Prec.highest(buildLivePreviewExtension(this)));
-      // 编辑器几何测量器：标题徽标的"左侧是否有空间"
-      // ＋缩进参考线对齐任务勾/圆点中心。徽标本体是纯 CSS（styles.css）；
-      // 手机端在写入阶段跳过徽标房间类（参考线对齐照常生效）
-      this.registerEditorExtension(buildEditorGeomExtension(this));
       // 护锚键位（Enter、Backspace、Delete）：防止隐藏的块 id 被挤到新行、被整段吞掉或合并后失效
       this.registerEditorExtension(cm.state.Prec.highest(buildAnchorKeyGuardExtension(this)));
       // Roam 式光标：行首/行尾上下移动保持行首/行尾；内容最前面 Enter 后光标进新空出的行
       this.registerEditorExtension(cm.state.Prec.highest(buildRoamCursorExtension(this)));
-      // 缩进参考线只显示上级链：只加标记、不注册键位
-      this.registerEditorExtension(buildGuideChainExtension(this));
     }
 
     // Shift+点击 → 跳转原块（Cmd/Ctrl 同按 → 新标签页）；
@@ -439,24 +406,6 @@ module.exports = class OutlinePlugin extends Plugin {
         const cur = editor.getCursor();
         const before = editor.getLine(cur.line).slice(0, cur.ch);
         editor.replaceSelection(!before || /\s$/.test(before) ? '@' : ' @');
-      },
-    });
-
-    // 日记流（瀑布视图）：连续滚动渲染最近的日记（文件名为 YYYY-MM-DD 的笔记）
-    this.registerView(DAILY_STREAM_VIEW, (leaf) => new DailyStreamView(leaf, this));
-    this.addCommand({
-      id: 'open-daily-stream',
-      name: '打开日记流（瀑布视图）',
-      callback: () => {
-        const existing = this.app.workspace.getLeavesOfType(DAILY_STREAM_VIEW);
-        if (existing.length) {
-          this.app.workspace.revealLeaf(existing[0]);
-          return;
-        }
-        this.app.workspace.getLeaf('tab').setViewState({
-          type: DAILY_STREAM_VIEW,
-          active: true,
-        });
       },
     });
   }
@@ -944,123 +893,6 @@ module.exports = class OutlinePlugin extends Plugin {
     }
   }
 
-  /* ---------- 文件树参考线 ---------- */
-
-  scheduleNavMeasure() {
-    if (this._navMeasureTimer) window.clearTimeout(this._navMeasureTimer);
-    this._navMeasureTimer = window.setTimeout(() => {
-      this._navMeasureTimer = null;
-      try {
-        this.measureNav();
-      } catch (e) { /* 量不到就没有线（类未打上），不抛 */ }
-    }, 40);
-  }
-
-  navContainer() {
-    const c = document.querySelector(
-      '.workspace-leaf-content[data-type="file-explorer"] .nav-files-container');
-    return c && c.offsetParent !== null ? c : null;
-  }
-
-  /** 给文件树容器挂观察器（每个容器一次）：虚拟滚动增删节点、折叠展开改类、滚动，
-      都重测；只看 class 属性，不看 style（自己写的内联变量不会触发自己） */
-  watchNavContainer(container) {
-    if (!this._navWatched) this._navWatched = new WeakSet();
-    if (this._navWatched.has(container)) return;
-    this._navWatched.add(container);
-    if (typeof MutationObserver === 'function') {
-      // 只对影响几何的变动重测：节点增删（虚拟滚动、展开）与 .tree-item 的折叠类；
-      // 行上的高亮类、自己写的容器类都跳过
-      const obs = new MutationObserver((records) => {
-        for (const r of records) {
-          const t = r.target;
-          if (!(t instanceof Element)) continue;
-          if (r.type === 'attributes' && !t.classList.contains('tree-item')) continue;
-          this.scheduleNavMeasure();
-          return;
-        }
-      });
-      obs.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-      this.register(() => obs.disconnect());
-    }
-  }
-
-  /** 文件树实测：Obsidian 1.13 的文件树是虚拟滚动，每一行都被内核用内联
-      !important 的负外边距／正内边距改写成全宽行，子级容器的位置与主题变量无关——
-      横位不能靠 CSS 推算。
-      这里逐个子级容器量上级文件夹行里折叠箭头的中心，把它相对
-      容器左缘的偏移写成容器的内联变量 --oo-nav-guide-shift，并打上 .oo-nav-measured
-      才画线；量不到的（根容器、上级行隐藏）不画。肘线横位 --oo-nav-elbow-left 与
-      行文字中心 --oo-nav-row-center 同样实测。只读几何＋写自定义属性，不改结构；
-      值没变就不写，免得触发别的插件的观察器 */
-  measureNav() {
-    const out = { ok: false, measured: 0, skipped: 0 };
-    if (!this.settings.navGuides) return out;
-    const container = this.navContainer();
-    if (!container) return out;
-    this.watchNavContainer(container);
-    const cRect = container.getBoundingClientRect();
-    const rel = (x) => Math.round((x - cRect.left) * 10) / 10;
-    const setVar = (el, name, value) => {
-      if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
-    };
-    out.ok = true;
-    const guideW = parseFloat(getComputedStyle(container).getPropertyValue('--oo-nav-guide-w')) || 1;
-    // 行文字中心：取第一个可见行（根目录的标题行在 DOM 里排最前但是隐藏的）
-    for (const row of container.querySelectorAll('.tree-item-self')) {
-      const rr = row.getBoundingClientRect();
-      if (rr.height === 0) continue;
-      const inner = row.querySelector('.tree-item-inner');
-      const ir = inner ? inner.getBoundingClientRect() : rr;
-      out.rowCenter = Math.round((ir.top + ir.height / 2 - rr.top) * 10) / 10;
-      setVar(container, '--oo-nav-row-center', out.rowCenter + 'px');
-      break;
-    }
-    // 第一遍：定哪些容器画线并先打上类——类一打上，styles.css 的层级缩进立即
-    // 生效、布局会变，坐标要在这之后再量
-    const targets = [];
-    out.roots = 0;
-    for (const kids of container.querySelectorAll('.tree-item > .tree-item-children')) {
-      const item = kids.parentElement;
-      const row = item.querySelector(':scope > .tree-item-self');
-      // 根容器：内核给根目录 .mod-root；没有的话按"最外层且上级行隐藏"兜底。
-      // 打 .oo-nav-root 让 styles.css 不给它缩进——缩进不再等实测，展开时第一帧就到位
-      const rowHidden = !row || row.getBoundingClientRect().height === 0;
-      const outermost = !(item.parentElement && item.parentElement.classList.contains('tree-item-children'));
-      if (item.classList.contains('mod-root') || (rowHidden && outermost)) {
-        kids.classList.add('oo-nav-root');
-        kids.classList.remove('oo-nav-measured');
-        out.roots++;
-        continue;
-      }
-      kids.classList.remove('oo-nav-root');
-      const icon = row && row.querySelector('.collapse-icon, .tree-item-icon');
-      const ir = icon ? icon.getBoundingClientRect() : null;
-      const kr = kids.getBoundingClientRect();
-      if (!ir || ir.width === 0 || kr.width === 0) {
-        kids.classList.remove('oo-nav-measured');
-        out.skipped++;
-        continue;
-      }
-      kids.classList.add('oo-nav-measured');
-      targets.push({ kids, row, icon });
-    }
-    // 第二遍：量坐标、写偏移
-    for (const { kids, row, icon } of targets) {
-      const ir = icon.getBoundingClientRect();
-      const kr = kids.getBoundingClientRect();
-      const chevronX = ir.left + ir.width / 2;
-      const shift = Math.round((chevronX - kr.left - guideW / 2) * 2) / 2;
-      const firstChild = kids.querySelector(':scope > .tree-item');
-      const elbowLeft = firstChild
-        ? Math.round((kr.left + shift - firstChild.getBoundingClientRect().left) * 2) / 2 : null;
-      setVar(kids, '--oo-nav-guide-shift', shift + 'px');
-      if (elbowLeft != null) setVar(kids, '--oo-nav-elbow-left', elbowLeft + 'px');
-      out.measured++;
-    }
-    return out;
-  }
-
   /* ---------- 编辑器重配置闸门：打字与输入法组合期间不重配置 ---------- */
 
   /** 任一 markdown 编辑器是否正处于输入法组合（CM6 EditorView.composing） */
@@ -1472,13 +1304,6 @@ module.exports = class OutlinePlugin extends Plugin {
     for (const [key, cls] of Object.entries(BODY_CLASSES)) {
       document.body.classList.toggle(cls, !!this.settings[key]);
     }
-    // 文件树层级缩进：写成 body 的内联变量，styles.css 用它给每层子级
-    // 容器定内边距；目的是把相邻参考线拉开距离，主题的缩进值不再参与
-    const indent = Number(this.settings.navGuidesIndent);
-    if (document.body.style && typeof document.body.style.setProperty === 'function') {
-      document.body.style.setProperty('--oo-nav-indent',
-        (Number.isFinite(indent) && indent >= 8 ? Math.min(60, indent) : 32) + 'px');
-    }
   }
 
   async saveAndApply() {
@@ -1489,7 +1314,6 @@ module.exports = class OutlinePlugin extends Plugin {
     this._refEpoch++;
     this.refreshAllViews();
     this.scheduleRefCounts();
-    this.scheduleNavMeasure();
   }
 
   refreshAllViews() {
@@ -1971,86 +1795,6 @@ function buildAnchorKeyGuardExtension(plugin) {
        拆完把光标挪到上面新空出的那一项；普通段落由本插件插入新行、光标留在新行，
        行末带块 id 的段落多插一个空行，新写的内容自成一段，不并进被引用的那一段
     建议框开着（上下键在选建议）、输入法组合中、有选区、按着修饰键、代码与公式里一律不动 */
-/** 缩进参考线只显示上级链：
-    光标所在 block 的父 block、祖父 block……直到这一行最顶层的 block，各显示一条竖线，一眼看出它挂在谁下面；
-    光标所在 block 自己有子项时，它往下的那条线不显示；光标不在列表里时一条都不显示。
-    做法：内核给每一级缩进（一个 Tab 或 4 个空格）包一个 .cm-indent，竖线画在它的 ::before；
-    本扩展只给「上级链覆盖的行、对应层级」那一格加 .oo-guide-on 标记，styles.css 在 body.oo-guide-chain 下隐藏其余竖线 */
-function buildGuideChainExtension(plugin) {
-  const { ViewPlugin, Decoration } = cm.view;
-  const { RangeSetBuilder } = cm.state;
-  const LIST_LINE = /^[\t ]*(?:[-*+]|\d+[.)])(?:\s|$)/;
-  const mark = Decoration.mark({ class: 'oo-guide-on' });
-  // 行首缩进拆成单位（一个 Tab 或 4 个空格），与内核 .cm-indent 的切法一致；返回每个单位的 [起, 止)
-  const units = (text) => {
-    const out = [];
-    let i = 0;
-    while (i < text.length) {
-      if (text[i] === '\t') { out.push([i, i + 1]); i++; }
-      else if (text.startsWith('    ', i)) { out.push([i, i + 4]); i += 4; }
-      else break;
-    }
-    return out;
-  };
-  const level = (text) => units(text).length;
-  // 上级链：父、祖父……顶层（每项 {n 行号, lv 缩进级}）
-  const chain = (doc, lineNo) => {
-    let cur = null;
-    for (let n = lineNo; n >= 1; n--) {
-      const t = doc.line(n).text;
-      if (LIST_LINE.test(t)) { cur = { n, lv: level(t) }; break; }
-      if (t.trim() === '') { if (n === lineNo) return []; continue; }
-      if (level(t) === 0) return []; // 顶格段落：不在列表里
-    }
-    if (!cur) return [];
-    const out = [];
-    let lv = cur.lv;
-    for (let n = cur.n - 1; n >= 1 && lv > 0; n--) {
-      const t = doc.line(n).text;
-      if (t.trim() === '') continue;
-      const l = level(t);
-      if (LIST_LINE.test(t)) { if (l < lv) { out.push({ n, lv: l }); lv = l; } }
-      else if (l === 0) break; // 顶格文字打断列表
-    }
-    return out;
-  };
-  // 一个上级覆盖到哪一行：往下直到第一行缩进不深于它的非空行
-  const subtreeEnd = (doc, a) => {
-    let end = a.n;
-    for (let n = a.n + 1; n <= doc.lines; n++) {
-      const t = doc.line(n).text;
-      if (t.trim() === '') continue;
-      if (level(t) <= a.lv) break;
-      end = n;
-    }
-    return end;
-  };
-  return ViewPlugin.fromClass(class {
-    constructor(view) { this.decorations = this.build(view); }
-    update(u) { if (u.docChanged || u.selectionSet || u.viewportChanged) this.decorations = this.build(u.view); }
-    build(view) {
-      if (!plugin.settings.guideChain || !plugin.settings.outlineStyle) return Decoration.none;
-      const doc = view.state.doc;
-      const anc = chain(doc, doc.lineAt(view.state.selection.main.head).number);
-      if (!anc.length) return Decoration.none;
-      const ranges = anc.map((a) => ({ lv: a.lv, from: a.n + 1, to: subtreeEnd(doc, a) }));
-      const b = new RangeSetBuilder();
-      const done = new Set();
-      for (const { from, to } of view.visibleRanges) {
-        for (let n = doc.lineAt(from).number; n <= doc.lineAt(to).number; n++) {
-          if (done.has(n)) continue;
-          done.add(n);
-          const line = doc.line(n);
-          const us = units(line.text);
-          const lvs = ranges.filter((r) => n >= r.from && n <= r.to && r.lv < us.length).map((r) => r.lv).sort((x, y) => x - y);
-          for (const lv of lvs) b.add(line.from + us[lv][0], line.from + us[lv][1], mark);
-        }
-      }
-      return b.finish();
-    }
-  }, { decorations: (v) => v.decorations });
-}
-
 function buildRoamCursorExtension(plugin) {
   const { EditorView } = cm.view;
   const { EditorSelection } = cm.state;
@@ -2155,106 +1899,6 @@ function buildRoamCursorExtension(plugin) {
   });
 }
 
-/** 编辑器几何测量器（标题徽标空间 + 参考线对齐）。
-    读写分离走 requestMeasure，避免在更新周期里直接量布局。
-
-    ① 徽标空间：行左缘到滚动区（有行号槽时到槽右缘）的距离 ≥30px 才挂
-    oo-hlv-room（门槛按 32px 页边距定），CSS 徽标仅在该类下
-    出场——窄窗格自动隐藏，正文排版永远不动；手机端恒不挂（承诺不显示）。
-
-    ② 参考线对齐（竖线从上级的任务勾/圆点中心垂下）：
-    复选框横位由 task-list-label 的 -0.25em、--checkbox-margin-inline-start
-    与 Obsidian 逐行计算的悬挂缩进内联样式共同决定，静态 CSS 算不准——
-    改为实测：取一个非光标行的任务勾/圆点，量"标记中心 − 本行左缘 −
-    缩进单元总宽"＝标记中心相对本级起点的横坐标 C。各级缩进等距时
-    级别不变，把 --indentation-guide-editing-indent 设为 C 即一个值对齐
-    所有深度。线的可见位置 = margin + 1.5px（原厂画法：1px 盒＋右缘
-    1px border），故写入 C − 1.5 */
-function buildEditorGeomExtension(plugin) {
-  const { ViewPlugin } = cm.view;
-  const NEED_PX = 30;
-  return ViewPlugin.fromClass(
-    class {
-      constructor(view) {
-        this.measure = {
-          read: (v) => {
-            const out = { room: -1, marker: null, heads: null };
-            // 量"行左缘"而非 cm-content 盒左缘：页边距落在
-            // 哪一层因版本与设置而异，徽标锚定的是行盒（right:100%）
-            const line = v.contentDOM.querySelector('.cm-line');
-            const anchor = line || v.contentDOM;
-            const left = anchor.getBoundingClientRect().left;
-            const gutters = v.scrollDOM.querySelector('.cm-gutters');
-            const base = gutters
-              ? gutters.getBoundingClientRect().right
-              : v.scrollDOM.getBoundingClientRect().left;
-            out.room = left - base;
-            // 标记中心：跳过光标行（露原始记号）与引用内部的复选框（
-            // oo-ref-task 也带 task-list-item-checkbox 类，几何不同源）
-            const cands = v.contentDOM.querySelectorAll(
-              '.cm-line:not(.cm-active) .task-list-item-checkbox,'
-              + ' .cm-line:not(.cm-active) .list-bullet'
-            );
-            for (const m of cands) {
-              if (m.closest('.oo-ref')) continue;
-              const ln = m.closest('.cm-line');
-              if (!ln) continue;
-              const r = m.getBoundingClientRect();
-              if (!r.width) continue;
-              let indentW = 0;
-              for (const ind of ln.querySelectorAll('.cm-indent')) {
-                indentW += ind.getBoundingClientRect().width;
-              }
-              out.marker = r.left + r.width / 2
-                - ln.getBoundingClientRect().left - indentW;
-              break;
-            }
-            // 徽标垂直对中：0.4em 基线近似在不同字号/主题下会差几
-            // 像素——改逐级实测标题行的行高与下衬垫，"文字行中心距行盒
-            // 底"= paddingBottom + lineHeight/2，写成 --oo-hlv-c{n}，
-            // CSS 端 bottom = 该值 − 0.5em（徽标盒 line-height:1 恰高 1em）
-            for (let n = 1; n <= 6; n++) {
-              const h = v.contentDOM.querySelector('.cm-line.HyperMD-header-' + n);
-              if (!h) continue;
-              const cs = getComputedStyle(h);
-              let lh = parseFloat(cs.lineHeight);
-              if (!isFinite(lh)) lh = 1.25 * parseFloat(cs.fontSize);
-              const pb = parseFloat(cs.paddingBottom) || 0;
-              (out.heads || (out.heads = {}))[n] = Math.round((pb + lh / 2) * 2) / 2;
-            }
-            return out;
-          },
-          write: (m, v) => {
-            v.dom.classList.toggle('oo-hlv-room',
-              !Platform.isPhone && m.room >= NEED_PX);
-            if (!plugin.settings.outlineStyle) {
-              v.dom.style.removeProperty('--indentation-guide-editing-indent');
-            } else if (m.marker != null && m.marker > 2 && m.marker < 80) {
-              v.dom.style.setProperty('--indentation-guide-editing-indent',
-                (Math.round((m.marker - 1.5) * 2) / 2) + 'px');
-            }
-            // 视口内没有标记时保留上次值（参考线只在有列表时可见，
-            // 届时标记几乎必在视口内）
-            if (m.heads) {
-              for (const n in m.heads) {
-                v.dom.style.setProperty('--oo-hlv-c' + n, m.heads[n] + 'px');
-              }
-            }
-          },
-        };
-        view.requestMeasure(this.measure);
-      }
-      update(update) {
-        // geometryChanged 覆盖窗格缩放、分栏、缩减栏宽开关等宽度变化；
-        // viewportChanged 让滚动新进视口的标题级别也能被测到
-        if (update.geometryChanged || update.viewportChanged) {
-          update.view.requestMeasure(this.measure);
-        }
-      }
-    }
-  );
-}
-
 /* ---------- 记住位置：光标记录（CM6） ---------- */
 
 /** 选区一变就把光标写进内存表（落盘另有防抖）。只认主编辑器：editorInfoField
@@ -2296,8 +1940,6 @@ class OutlineSettingTab extends PluginSettingTab {
           })
         );
     };
-
-    new Setting(containerEl).setName('编辑与引用').setHeading();
 
     toggle(
       '行内块引用',
@@ -2364,153 +2006,6 @@ class OutlineSettingTab extends PluginSettingTab {
         + '前进/后退、[[链接#锚点]]、搜索命中这类自带定位的打开不受影响',
       'rememberPosition'
     );
-
-    new Setting(containerEl).setName('主题').setHeading();
-
-    toggle(
-      '大纲视图样式',
-      '小圆点 bullet、悬停圆晕、折叠节点持久圆晕、缩进参考线加深、缩进加宽；'
-        + '缩进参考线自动对齐上级任务勾/圆点的正中垂下（实测校准，随字号窗格自适应）。'
-        + '参考线依赖 Obsidian 设置「显示缩进参考线」保持开启',
-      'outlineStyle'
-    );
-    toggle(
-      '缩进参考线只显示上级链',
-      '光标所在的块：给它的父块、祖父块……直到这一行最顶层的块各显示一条竖线，看得出它挂在谁下面；'
-        + '它自己有子项时，往下的那条线不显示；光标不在列表里时不显示竖线。关掉则恢复 Obsidian 原样（每一级缩进都有竖线）。'
-        + '需要同时开着「大纲视图样式」',
-      'guideChain'
-    );
-    toggle(
-      '加宽行距并统一列表间距',
-      '全局行高提高到 1.7（默认 1.5，可用 --oo-line-height 覆写），'
-        + '阅读视图去除有序/无序列表首末的额外块间距及其与相邻段落的间距，'
-        + '全文行距节奏统一。与「紧凑列表间距」二选一',
-      'spacious'
-    );
-    toggle('紧凑列表间距', '收紧列表行距，信息密度更高。与「加宽行距」二选一', 'compact');
-    toggle(
-      '加粗用重点色',
-      '正文加粗（**…**）显示为主题强调色，与普通文本形成层次。'
-        + '经官方变量 --bold-color 实现，阅读视图与编辑器同时生效',
-      'boldAccent'
-    );
-    toggle(
-      '圆角待办框',
-      'Todo 复选框改为圆形，'
-        + '弧度可用代码片段覆写 --oo-checkbox-radius',
-      'roundTodo'
-    );
-    toggle(
-      '标题级别徽标',
-      '标题行（# ～ ######）左外侧空白处显示淡灰 H1–H6 徽标，一眼可辨层级；'
-        + '绝对定位不占版面，编辑区宽度与正文位置不变。'
-        + '仅在左侧确有空间时显示（窄窗格自动隐藏，手机端不显示）；'
-        + '颜色随深浅主题自适配，可用代码片段覆写 --oo-hlv-color / --oo-hlv-opacity',
-      'headingLabels'
-    );
-    toggle(
-      '液态玻璃（实验）',
-      '弹窗、菜单、悬浮预览毛玻璃化（模糊＋高光描边＋大圆角），'
-        + 'iOS 液态玻璃的视觉近似（约六七成，不做折射）。'
-        + '输入补全候选面板为近实底不做模糊——它随键连环开合，'
-        + '背景模糊跟不上会闪出不透明中间帧。'
-        + '性能敏感或观感不合随时关',
-      'liquidGlass'
-    );
-
-    new Setting(containerEl).setName('文件树').setHeading();
-
-    toggle(
-      '文件树参考线',
-      '左侧文件树每层子级前一根细线，从上级文件夹箭头正中垂下，'
-        + '当前文件所在的整条祖先链加深——与编辑器里的缩进参考线同一语言。'
-        + '线画在子级容器的背景上，不占用主题的 border 与 ::before，'
-        + '与主题样式互不干扰；可用代码片段覆写 --oo-nav-guide-w / --oo-nav-guide-alpha / --oo-nav-guide-shift',
-      'navGuides'
-    );
-    toggle(
-      '文件树参考线：肘线',
-      '从参考线向每个子项伸出 8px 横线，树状图观感；纵位按插件实测的行文字中心',
-      'navGuidesElbow'
-    );
-    toggle(
-      '文件树参考线：文件行淡化',
-      '文件名比文件夹名淡一档（当前文件与悬停行不淡），层级对比更明显',
-      'navGuidesMuteFiles'
-    );
-    new Setting(containerEl)
-      .setName('文件树参考线：层级缩进')
-      .setDesc('每一层子级向右缩进的像素数，8–60，默认 32，主题默认约 16。改大就是把相邻两条参考线拉开；'
-        + '只对展开着的子级生效，顶层不动')
-      .addText((t) => {
-        t.inputEl.type = 'number';
-        t.inputEl.min = '8';
-        t.inputEl.max = '60';
-        t.setValue(String(this.plugin.settings.navGuidesIndent)).onChange(async (value) => {
-          const n = parseInt(value, 10);
-          if (!Number.isFinite(n)) return;
-          this.plugin.settings.navGuidesIndent = Math.max(8, Math.min(60, n));
-          await this.plugin.saveAndApply();
-        });
-      });
-  }
-}
-
-/* ---------- 日记流视图 ---------- */
-
-class DailyStreamView extends ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.plugin = plugin;
-    this.shown = 7;
-  }
-
-  getViewType() {
-    return DAILY_STREAM_VIEW;
-  }
-
-  getDisplayText() {
-    return '日记流';
-  }
-
-  getIcon() {
-    return 'calendar-days';
-  }
-
-  async onOpen() {
-    await this.renderStream();
-  }
-
-  dailyFiles() {
-    return this.plugin.app.vault.getMarkdownFiles()
-      .filter((f) => /^\d{4}-\d{2}-\d{2}$/.test(f.basename))
-      .sort((a, b) => b.basename.localeCompare(a.basename));
-  }
-
-  async renderStream() {
-    const root = this.contentEl;
-    root.empty();
-    root.addClass('oo-daily-stream');
-    const all = this.dailyFiles();
-    for (const file of all.slice(0, this.shown)) {
-      const day = root.createDiv({ cls: 'oo-stream-day' });
-      const head = day.createEl('h2', { cls: 'oo-stream-date', text: file.basename });
-      head.setAttribute('aria-label', '在新标签页打开该日记');
-      head.addEventListener('click', () => {
-        this.plugin.app.workspace.openLinkText(file.basename, file.path, 'tab');
-      });
-      const body = day.createDiv({ cls: 'oo-stream-body' });
-      const raw = await this.plugin.app.vault.cachedRead(file);
-      await MarkdownRenderer.render(this.plugin.app, raw, body, file.path, this);
-    }
-    if (this.shown < all.length) {
-      const more = root.createEl('button', { cls: 'oo-stream-more', text: '加载更多 7 天' });
-      more.addEventListener('click', () => {
-        this.shown += 7;
-        this.renderStream();
-      });
-    }
   }
 }
 
